@@ -7,12 +7,12 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { execSync } from "node:child_process";
-import { chromium, type BrowserContext } from "playwright";
+import { execSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { BrowserContext, chromium, type } from 'playwright';
+import { Type } from 'typebox';
 
 const CX = "partner-pub-8993703457585266:4862972284";
 const TOKEN_TTL = 3600_000; // 1 hour in ms
@@ -105,7 +105,9 @@ interface CSEToken {
 function loadCachedToken(): CSEToken | null {
   if (!existsSync(TOKEN_CACHE_PATH)) return null;
   try {
-    const cache: TokenCache = JSON.parse(readFileSync(TOKEN_CACHE_PATH, "utf8"));
+    const cache: TokenCache = JSON.parse(
+      readFileSync(TOKEN_CACHE_PATH, "utf8"),
+    );
     if (Date.now() > cache.expiresAt) return null;
     return cache.token;
   } catch {
@@ -167,13 +169,16 @@ async function searchCSE(query: string, token: CSEToken): Promise<any[]> {
       Accept: "*/*",
       "Accept-Language": "en-US,en;q=0.9",
       Referer: `https://cse.google.com/cse.js?cx=${CX}`,
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       Cookie: "CONSENT=YES+",
     },
   });
 
   const text = await resp.text();
-  const data = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+  const data = JSON.parse(
+    text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1),
+  );
 
   if (data.error?.code === 429) {
     throw new Error("Google CSE rate limit hit");
@@ -192,16 +197,22 @@ async function searchWithBrowser(query: string): Promise<any[]> {
 
   const hideChrome = () => {
     try {
-      execSync('osascript -e "tell application \"Google Chrome\" to set visible of every window to false"', { timeout: 5000 });
+      execSync(
+        `osascript -e 'tell application "iTerm2" to activate' -e 'tell application "iTerm2" to select window 1'`,
+        { timeout: 5000 },
+      );
     } catch {}
   };
   hideChrome();
 
   try {
-    await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en`, {
-      waitUntil: "domcontentloaded",
-      timeout: 20_000,
-    });
+    await page.goto(
+      `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 20_000,
+      },
+    );
 
     await page.waitForTimeout(3000);
     hideChrome();
@@ -209,9 +220,9 @@ async function searchWithBrowser(query: string): Promise<any[]> {
     // Handle consent dialogs
     const consentSelectors = [
       'fluent-button[aria-label*="Accept"]',
-      'button#L2AGLb',
+      "button#L2AGLb",
       'div[role="dialog"] button',
-      'center > div > button',
+      "center > div > button",
     ];
     for (const selector of consentSelectors) {
       const btn = page.locator(selector).first();
@@ -223,9 +234,11 @@ async function searchWithBrowser(query: string): Promise<any[]> {
     }
 
     // Check for CAPTCHA
-    const captchaVisible = await page.locator(
-      '#captcha-container, .g-recaptcha, div[role="dialog"]',
-    ).first().isVisible({ timeout: 1000 }).catch(() => false);
+    const captchaVisible = await page
+      .locator('#captcha-container, .g-recaptcha, div[role="dialog"]')
+      .first()
+      .isVisible({ timeout: 1000 })
+      .catch(() => false);
 
     if (captchaVisible) {
       throw new Error("Google showed a CAPTCHA");
@@ -236,7 +249,9 @@ async function searchWithBrowser(query: string): Promise<any[]> {
     // Restore focus to iTerm (async, after tool returns)
     setImmediate(() => {
       try {
-        execSync('osascript -e "tell application \"iTerm\" to activate"', { timeout: 5000 });
+        execSync('osascript -e "tell application \"iTerm\" to activate"', {
+          timeout: 5000,
+        });
       } catch {}
     });
 
@@ -274,17 +289,26 @@ async function searchWithBrowser(query: string): Promise<any[]> {
               }
             }
           } else {
-            snippet = (snippetEl.textContent?.trim() ?? "").replace(/\.{3}\s*Read more$/i, "").slice(0, 300);
+            snippet = (snippetEl.textContent?.trim() ?? "")
+              .replace(/\.{3}\s*Read more$/i, "")
+              .slice(0, 300);
           }
 
           if (snippetEl) {
             const linkEl = container.querySelector("a[href]");
             const href = linkEl?.getAttribute("href") ?? "";
             let url = href;
-            try { url = new URL(href).searchParams.get("q") ?? href; } catch {}
+            try {
+              url = new URL(href).searchParams.get("q") ?? href;
+            } catch {}
             if (!url || url === "about:blank") return;
 
-            results.push({ titleNoFormatting: title, unescapedUrl: url, url, contentNoFormatting: snippet });
+            results.push({
+              titleNoFormatting: title,
+              unescapedUrl: url,
+              url,
+              contentNoFormatting: snippet,
+            });
             return;
           }
           container = container.parentElement;
@@ -356,7 +380,9 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      const lines = [`Found ${results.length} results for "${params.query}" (${source}):`];
+      const lines = [
+        `Found ${results.length} results for "${params.query}" (${source}):`,
+      ];
       for (let i = 0; i < results.length; i++) {
         const r = results[i];
         const title = r.titleNoFormatting ?? "N/A";
