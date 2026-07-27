@@ -176,6 +176,13 @@ async function searchCSE(query: string, token: CSEToken): Promise<any[]> {
   });
 
   const text = await resp.text();
+
+  if (!resp.ok) {
+    throw new Error(
+      `HTTP ${resp.status} ${resp.statusText}: ${text.slice(0, 500)}`,
+    );
+  }
+
   const data = JSON.parse(
     text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1),
   );
@@ -198,7 +205,7 @@ async function searchWithBrowser(query: string): Promise<any[]> {
   const hideChrome = () => {
     try {
       execSync(
-        `osascript -e 'tell application "iTerm2" to activate' -e 'tell application "iTerm2" to select window 1'`,
+        `osascript -e 'tell application "iTerm2" to activate' -e 'tell application "iTerm2" to select current window'`,
         { timeout: 5000 },
       );
     } catch {}
@@ -354,7 +361,8 @@ export default function (pi: ExtensionAPI) {
       try {
         const token = await getToken();
         results = await searchCSE(params.query, token);
-      } catch {
+        source = "cse";
+      } catch (cseErr) {
         try {
           results = await searchWithBrowser(params.query);
           source = "browser-fallback";
@@ -363,7 +371,7 @@ export default function (pi: ExtensionAPI) {
             content: [
               {
                 type: "text",
-                text: `Search failed: ${browserErr instanceof Error ? browserErr.message : String(browserErr)}`,
+                text: `Search failed: ${cseErr instanceof Error ? cseErr.message : String(cseErr)}`,
               },
             ],
             details: {},
