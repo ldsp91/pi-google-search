@@ -66,7 +66,30 @@ That's it — the browser fallback uses your system's Google Chrome, so `npx pla
     - **Windows:** discovered via the registry (`App Paths\chrome.exe`) or common install locations
   - On macOS, AppleScript is used to keep the Chrome window behind the terminal (iTerm2/iTerm) and restore focus after the search.
   - On Windows, the Chrome window is launched off-screen (`--window-position=-32000,-32000`).
-- Other platforms: only the CSE API path is available (no browser fallback).
+- **Linux (incl. sandboxes/containers):** Google Chrome or Chromium installed, plus a display. In display-less environments (containers, headless VMs) install `xvfb` and the extension starts a virtual display automatically (see below).
+
+### Sandbox / headless Linux setup
+
+The browser fallback is **headed** by design (headless Chrome gets caught by Google). Inside a sandbox with no display, Chrome renders to a virtual X server instead:
+
+```bash
+# one-time, as root inside the sandbox:
+bash scripts/install-chrome.sh
+```
+
+This installs Google Chrome + Xvfb (Debian/Ubuntu bases). At runtime the extension:
+
+1. detects that `DISPLAY` is unset,
+2. starts `Xvfb :99` (falls back to :100–:110 if busy) with a 1920×1080 screen,
+3. launches real headed Chrome against it, and
+4. kills Xvfb on session shutdown.
+
+Notes:
+
+- Works in Docker/VM sandboxes because Chrome runs with `--no-sandbox --disable-dev-shm-usage`.
+- If you already run an X server (e.g. `xvfb-run` or a forwarded display), set `DISPLAY` and Xvfb is skipped.
+- Chromium-only systems are supported via auto-discovery of `/usr/bin/chromium*`.
+- The sandbox's own IP reputation still applies — Google may rate-limit datacenter IPs regardless of headed/headless.
 
 ## Configuration
 
@@ -74,3 +97,4 @@ That's it — the browser fallback uses your system's Google Chrome, so `npx pla
 |----------------------|-------------|
 | `CSE_CHROME_PATH` | Override the Chrome executable location (checked first during discovery) |
 | `CSE_FORCE_BROWSER` | When set, always skip the CSE API and use the browser fallback |
+| `DISPLAY` | Use this X display instead of auto-starting Xvfb (Linux) |

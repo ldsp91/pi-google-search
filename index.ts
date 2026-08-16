@@ -7,11 +7,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execSync } from 'node:child_process';
+import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium, type BrowserContext } from 'playwright';
+import { chromium, type BrowserContext, type LaunchOptions } from 'playwright';
 import { Type } from 'typebox';
 
 const CX = "partner-pub-8993703457585266:4862972284";
@@ -21,6 +21,7 @@ const BROWSER_PROFILE_DIR = join(tmpdir(), "google_search_profile");
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
+const IS_LINUX = process.platform === "linux";
 
 /**
  * Locate the real Chrome binary.
@@ -74,34 +75,133 @@ function findChrome(): string | null {
     return existsSync(mac) ? mac : null;
   }
 
+  if (IS_LINUX) {
+    const candidates = [
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/opt/google/chrome/chrome",
+      "/usr/bin/chromium-browser",
+      "/usr/bin/chromium",
+    ];
+    return candidates.find((p) => existsSync(p)) ?? null;
+  }
+
   // Other platforms: no built-in discovery
+  return null;
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs: number,
+  intervalMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return predicate();
+}
+
+/**
+ * Start an Xvfb server on the first free virtual display (:99-:110) so
+ * headful Chrome can render inside display-less environments (containers,
+ * sandboxes). Returns null when Xvfb is not installed.
+ */
+async function startXvfb(): Promise<{ display: string; proc: ChildProcess } | null> {
+  try {
+    execSync("which Xvfb", { stdio: "ignore" });
+  } catch {
+    return null;
+  }
+
+  for (let n = 99; n <= 110; n++) {
+    const lockPath = join("/tmp", `.X${n}-lock`);
+    if (existsSync(lockPath)) continue;
+
+    const display = `:${n}`;
+    const socketPath = join("/tmp", ".X11-unix", `X${n}`);
+    const proc = spawn(
+      "Xvfb",
+      [display, "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+      { stdio: "ignore" },
+    );
+
+    // Resolve as soon as the socket appears, the process dies, or 5s pass.
+    const up = await Promise.race([
+      waitFor(() => existsSync(socketPath), 5000, 100),
+      new Promise<boolean>((resolve) => {
+        proc.once("exit", () => resolve(false));
+        proc.once("error", () => resolve(false));
+      }),
+    ]);
+    if (!up) {
+      try { proc.kill(); } catch {}
+      continue;
+    }
+    return { display, proc };
+  }
   return null;
 }
 
 // Lazily-initialized persistent context (real Chrome profile, no headless)
 let contextInstance: Promise<BrowserContext> | null = null;
+let xvfbProc: ChildProcess | null = null;
 
-function getContext(): Promise<BrowserContext> {
-  if (!contextInstance) {
-    const executable = findChrome();
-    if (!executable) {
+async function getContext(): Promise<BrowserContext> {
+  if (contextInstance) return contextInstance;
+
+  const executable = findChrome();
+  if (!executable) {
+    throw new Error(
+      "Google Chrome not found. Install Chrome (e.g. scripts/install-chrome.sh) or set the CSE_CHROME_PATH env var to its executable.",
+    );
+  }
+
+  // Headful Chrome needs a display. In display-less Linux environments
+  // (containers, sandboxes) fall back to a virtual Xvfb display so the real
+  // headful browser can render off-screen.
+  let display = process.env.DISPLAY;
+  if (IS_LINUX && !display) {
+    const xvfb = await startXvfb();
+    if (xvfb) {
+      display = xvfb.display;
+      xvfbProc = xvfb.proc;
+    } else {
       throw new Error(
-        "Google Chrome not found. Install Chrome or set the CSE_CHROME_PATH env var to its executable.",
+        "No DISPLAY set and Xvfb not available. Install Xvfb in the sandbox (e.g. apt-get install -y xvfb) or provide a display.",
       );
     }
-    contextInstance = chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-      executablePath: executable,
-      headless: false,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled",
-        "--no-first-run",
-        "--no-default-browser-check",
-        ...(IS_WIN ? ["--window-position=-32000,-32000"] : []),
-      ],
-    });
   }
+
+  const launchOptions: LaunchOptions = {
+    executablePath: executable,
+    headless: false,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-blink-features=AutomationControlled",
+      "--no-first-run",
+      "--no-default-browser-check",
+      ...(IS_LINUX ? ["--disable-dev-shm-usage"] : []),
+      ...(IS_WIN ? ["--window-position=-32000,-32000"] : []),
+    ],
+  };
+  if (display) {
+    launchOptions.env = { ...process.env, DISPLAY: display };
+  }
+
+  contextInstance = chromium
+    .launchPersistentContext(BROWSER_PROFILE_DIR, launchOptions)
+    .catch((err) => {
+      // Reset so the next call can retry (e.g. after fixing the environment)
+      contextInstance = null;
+      if (xvfbProc) {
+        try { xvfbProc.kill(); } catch {}
+        xvfbProc = null;
+      }
+      throw err;
+    });
   return contextInstance;
 }
 
@@ -405,6 +505,12 @@ export default function (pi: ExtensionAPI) {
         await (await contextInstance).close();
       } catch {}
       contextInstance = null;
+    }
+    if (xvfbProc) {
+      try {
+        xvfbProc.kill();
+      } catch {}
+      xvfbProc = null;
     }
   });
 
