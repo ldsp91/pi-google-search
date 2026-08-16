@@ -22,18 +22,23 @@ Results are returned as a numbered list of titles, URLs, and snippets, with `det
    - Stealth patches applied to hide automation fingerprints: `navigator.webdriver` removal, plugins/languages spoofing, Chrome runtime spoofing, notification-permission override, WebGL vendor/renderer masking.
    - Handles Google consent dialogs and detects CAPTCHAs (throws an error if one appears).
 
-## Setup
+## Install
+
+### Via git (recommended)
 
 ```bash
-cd ~/agents/pi/extensions/google-cse-search
-npm install
+pi install git:github.com/ldsp91/pi-google-search
 ```
 
-That's it — the browser fallback uses your system's Google Chrome, so `npx playwright install chromium` is **not** needed.
+pi clones the repo and runs `npm install` for you, so no manual setup is needed. Remove it later with:
 
-## Install as pi Extension
+```bash
+pi remove git:github.com/ldsp91/pi-google-search
+```
 
-Add to your `settings.json`:
+### Local checkout
+
+Point pi at a local clone in your `settings.json`:
 
 ```json
 {
@@ -46,6 +51,10 @@ Or symlink into `~/.pi/agent/extensions/`:
 ```bash
 ln -s ~/agents/pi/extensions/google-cse-search ~/.pi/agent/extensions/google-cse-search
 ```
+
+For local installs, run `npm install` in the extension directory once (git installs do this automatically).
+
+That's it — the browser fallback uses your system's Google Chrome, so `npx playwright install chromium` is **not** needed.
 
 ## Requirements
 
