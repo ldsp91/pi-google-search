@@ -11,28 +11,94 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BrowserContext, chromium, type } from 'playwright';
+import { chromium, type BrowserContext } from 'playwright';
 import { Type } from 'typebox';
 
 const CX = "partner-pub-8993703457585266:4862972284";
-const TOKEN_TTL = 3600_000; // 1 hour in ms
+const TOKEN_TTL = 3_600_000; // 1 hour in ms
 const TOKEN_CACHE_PATH = join(tmpdir(), "google_cse_token.json");
 const BROWSER_PROFILE_DIR = join(tmpdir(), "google_search_profile");
+
+const IS_WIN = process.platform === "win32";
+const IS_MAC = process.platform === "darwin";
+
+/**
+ * Locate the real Chrome binary.
+ * Order: CSE_CHROME_PATH env override -> OS-specific discovery.
+ */
+function findChrome(): string | null {
+  const override = process.env.CSE_CHROME_PATH;
+  if (override && existsSync(override)) return override;
+
+  if (IS_WIN) {
+    // Most reliable: registry App Paths entry (set by Chrome installer)
+    try {
+      const out = execSync(
+        'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe" /ve',
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      );
+      const m = out.match(/REG_SZ\s+(.+?\.exe)\s*$/im);
+      if (m && existsSync(m[1].trim())) return m[1].trim();
+    } catch {}
+    // Common install locations
+    const candidates = [
+      join(
+        process.env["ProgramFiles"] ?? "C:\\Program Files",
+        "Google",
+        "Chrome",
+        "Application",
+        "chrome.exe",
+      ),
+      join(
+        process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
+        "Google",
+        "Chrome",
+        "Application",
+        "chrome.exe",
+      ),
+      join(
+        process.env["LOCALAPPDATA"] ?? "",
+        "Google",
+        "Chrome",
+        "Application",
+        "chrome.exe",
+      ),
+    ];
+    const found = candidates.find((p) => existsSync(p));
+    if (found) return found;
+    return null;
+  }
+
+  if (IS_MAC) {
+    const mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    return existsSync(mac) ? mac : null;
+  }
+
+  // Other platforms: no built-in discovery
+  return null;
+}
 
 // Lazily-initialized persistent context (real Chrome profile, no headless)
 let contextInstance: Promise<BrowserContext> | null = null;
 
 function getContext(): Promise<BrowserContext> {
   if (!contextInstance) {
+    const executable = findChrome();
+    if (!executable) {
+      throw new Error(
+        "Google Chrome not found. Install Chrome or set the CSE_CHROME_PATH env var to its executable.",
+      );
+    }
     contextInstance = chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-      executablePath:
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      executablePath: executable,
       headless: false,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
+        "--no-default-browser-check",
+        ...(IS_WIN ? ["--window-position=-32000,-32000"] : []),
       ],
     });
   }
@@ -45,11 +111,6 @@ async function applyStealth(page: import("playwright").Page): Promise<void> {
     Object.defineProperty(navigator, "webdriver", { get: () => false });
     delete (navigator as Record<string, unknown>).plugins;
     delete (navigator as Record<string, unknown>).languages;
-    (navigator as Record<string, unknown>).plugins = {
-      0: { description: "PDF Viewer" },
-      1: { description: "Chrome PDF Plugin" },
-      length: 2,
-    } as PluginArray;
     (navigator as Record<string, unknown>).languages = [
       "en-US",
       "en",
@@ -202,7 +263,10 @@ async function searchWithBrowser(query: string): Promise<any[]> {
   const page = await context.newPage();
   await applyStealth(page);
 
+  // macOS only: bring the terminal forward to cover the Chrome window.
+  // On Windows the window is launched off-screen instead (see getContext).
   const hideChrome = () => {
+    if (!IS_MAC) return;
     try {
       execSync(
         `osascript -e 'tell application "iTerm2" to activate' -e 'tell application "iTerm2" to select current window'`,
@@ -253,14 +317,16 @@ async function searchWithBrowser(query: string): Promise<any[]> {
 
     hideChrome();
 
-    // Restore focus to iTerm (async, after tool returns)
-    setImmediate(() => {
-      try {
-        execSync('osascript -e "tell application \"iTerm\" to activate"', {
-          timeout: 5000,
-        });
-      } catch {}
-    });
+    // Restore focus to iTerm (macOS only, async, after tool returns)
+    if (IS_MAC) {
+      setImmediate(() => {
+        try {
+          execSync('osascript -e "tell application \"iTerm\" to activate"', {
+            timeout: 5000,
+          });
+        } catch {}
+      });
+    }
 
     const results = await page.evaluate(() => {
       const results: Array<{
@@ -353,12 +419,22 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       query: Type.String({ description: "The search query" }),
+      forceBrowser: Type.Optional(
+        Type.Boolean({
+          description:
+            "Skip the CSE API and use the browser fallback directly (useful for testing the fallback).",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       let results: any[] = [];
       let source = "cse";
 
       try {
+        // Skip CSE and use the browser fallback when explicitly requested
+        if (params.forceBrowser || process.env.CSE_FORCE_BROWSER) {
+          throw new Error("CSE skipped (forceBrowser)");
+        }
         const token = await getToken();
         results = await searchCSE(params.query, token);
         source = "cse";
