@@ -7,11 +7,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ChildProcess, execSync, spawn, type } from 'node:child_process';
+import { ChildProcess, execSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BrowserContext, chromium, LaunchOptions, type } from 'playwright';
+import { BrowserContext, chromium, LaunchOptions } from 'playwright';
 import { Type } from 'typebox';
 
 const IS_WIN = process.platform === "win32";
