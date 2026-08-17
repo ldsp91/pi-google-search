@@ -403,27 +403,42 @@ async function searchWithBrowser(query: string): Promise<any[]> {
       `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en`,
       {
         waitUntil: "domcontentloaded",
-        timeout: 20_000,
+        timeout: 30_000,
       },
     );
 
-    await page.waitForTimeout(3000);
-    hideChrome();
+    // Wait for the actual results (headlines are in the initial HTML, so
+    // this resolves in well under a second) instead of a blind 3s wait.
+    const hasResults = await page
+      .locator("div#search h3")
+      .first()
+      .isVisible({ timeout: 4000 })
+      .catch(() => false);
 
-    // Handle consent dialogs
-    const consentSelectors = [
-      'fluent-button[aria-label*="Accept"]',
-      "button#L2AGLb",
-      'div[role="dialog"] button',
-      "center > div > button",
-    ];
-    for (const selector of consentSelectors) {
-      const btn = page.locator(selector).first();
-      if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
-        await btn.click().catch(() => {});
-        await page.waitForTimeout(2000);
-        break;
+    if (!hasResults) {
+      hideChrome();
+
+      // No results yet: a consent interstitial is up or the page is still
+      // rendering. Handle consent, then wait for results again.
+      const consentSelectors = [
+        'fluent-button[aria-label*="Accept"]',
+        "button#L2AGLb",
+        'div[role="dialog"] button',
+        "center > div > button",
+      ];
+      for (const selector of consentSelectors) {
+        const btn = page.locator(selector).first();
+        if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+          await btn.click().catch(() => {});
+          await page.waitForTimeout(1500);
+          break;
+        }
       }
+      await page
+        .locator("div#search h3")
+        .first()
+        .isVisible({ timeout: 4000 })
+        .catch(() => false);
     }
 
     // Check for CAPTCHA — the exact detection the validated reference flow
@@ -523,6 +538,14 @@ async function searchWithBrowser(query: string): Promise<any[]> {
 }
 
 export default function (pi: ExtensionAPI) {
+  // In display-less Linux environments (the sandbox) there is no visible
+  // window to be intrusive about, so start the browser eagerly: by the
+  // time the first search runs, Chrome is already up and the call pays
+  // no launch cost. On Mac/Windows the window would pop up, so stay lazy.
+  if (IS_LINUX && !process.env.DISPLAY) {
+    void getContext().catch(() => {});
+  }
+
   pi.on("session_shutdown", async () => {
     if (contextInstance) {
       try {

@@ -20,6 +20,7 @@ Results are returned as a numbered list of titles, URLs, and snippets, with `det
    - `forceBrowser: true` in the tool params, or the `CSE_FORCE_BROWSER` environment variable.
    - Uses the real Google Chrome binary (not Playwright's Chromium) in a **persistent, headed profile** at `$TMPDIR/google_search_profile`, so consent dialogs are handled only once.
    - Stealth patches applied to hide automation fingerprints: `navigator.webdriver` removal, plugins/languages spoofing, Chrome runtime spoofing.
+   - Waits for the actual result headlines instead of using fixed delays (a few tenths of a second instead of ~9s of blind waiting per search), and in display-less Linux environments (the sandbox) starts the browser eagerly at session start so the first search pays no launch cost.
    - Handles Google consent dialogs and detects CAPTCHAs (throws an error if one appears).
 
 ## Install
