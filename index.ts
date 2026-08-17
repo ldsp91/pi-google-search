@@ -8,7 +8,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, type BrowserContext, type LaunchOptions } from 'playwright';
@@ -17,7 +17,11 @@ import { Type } from 'typebox';
 const CX = "partner-pub-8993703457585266:4862972284";
 const TOKEN_TTL = 3_600_000; // 1 hour in ms
 const TOKEN_CACHE_PATH = join(tmpdir(), "google_cse_token.json");
-const BROWSER_PROFILE_DIR = join(tmpdir(), "google_search_profile");
+// Fixed path on Linux so a Dockerfile can bake a pre-warmed profile into
+// the image at exactly the location the extension will use.
+const BROWSER_PROFILE_DIR = IS_LINUX
+  ? "/tmp/google_search_profile"
+  : join(tmpdir(), "google_search_profile");
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -177,23 +181,33 @@ async function getContext(): Promise<BrowserContext> {
   // A real user's browser always reports the timezone of the region their
   // egress IP points to. Display-less Linux environments default to UTC,
   // which disagrees with the IP's geography and reads as bot-like, so on
-  // Linux we align the browser's timezone with the egress IP's (best
-  // effort; on any failure the system default is kept).
-  let timezoneId: string | undefined;
-  if (IS_LINUX) {
+  // Linux we pin the browser to the user's timezone (CSE_TIMEZONE; default
+  // Europe/Berlin — the sandbox's egress region).
+  const timezoneId = IS_LINUX
+    ? (process.env.CSE_TIMEZONE ?? "Europe/Berlin")
+    : undefined;
+
+  // A previously killed/crashed session can leave a live Chrome holding
+  // this profile (orphaned when its node process died) plus a
+  // SingletonLock; launching then would hang waiting for the other
+  // instance. Clear both before launching.
+  if (process.platform !== "win32") {
     try {
-      const resp = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
-        signal: AbortSignal.timeout(3000),
+      execSync(`pkill -f '${BROWSER_PROFILE_DIR}' 2>/dev/null || true`, {
+        stdio: "ignore",
       });
-      const text = await resp.text();
-      const m = text.match(/^TZ=([^\r\n]+)$/m);
-      timezoneId = m?.[1];
     } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
+  try {
+    const lockPath = join(BROWSER_PROFILE_DIR, "SingletonLock");
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch {}
 
   const launchOptions: LaunchOptions = {
     executablePath: executable,
     headless: false,
+    timeout: 30000,
     ...(timezoneId ? { timezoneId } : {}),
     args: [
       "--no-sandbox",
@@ -231,29 +245,6 @@ async function getContext(): Promise<BrowserContext> {
 async function applyStealth(page: import("playwright").Page): Promise<void> {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => false });
-    delete (navigator as Record<string, unknown>).plugins;
-    delete (navigator as Record<string, unknown>).languages;
-    (navigator as Record<string, unknown>).languages = [
-      "en-US",
-      "en",
-    ] as readonly string[];
-    (window as Record<string, unknown>).chrome = {
-      runtime: {
-        onMessage: { addListener: () => {}, removeListener: () => {} },
-        onConnect: { addListener: () => {}, removeListener: () => {} },
-      },
-    };
-    const originalQuery = (navigator as any).permissions?.query;
-    if (originalQuery) {
-      (navigator as any).permissions.query = async function (
-        request: PermissionsQuery,
-      ): Promise<PermissionStatus> {
-        if (request.name === "notifications") {
-          return { state: "denied" } as PermissionStatus;
-        }
-        return originalQuery.call(navigator.permissions, request);
-      };
-    }
     Object.defineProperty(navigator, "plugins", {
       get: () => ({
         0: { name: "Chrome PDF Plugin" },
@@ -262,12 +253,14 @@ async function applyStealth(page: import("playwright").Page): Promise<void> {
         length: 3,
       }),
     });
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function (param: number) {
-      const value = getParameter.call(this, param);
-      if (param === 37445) return "Intel Inc.";
-      if (param === 37446) return "Intel Iris OpenGL Engine";
-      return value;
+    Object.defineProperty(navigator, "languages", {
+      get: () => ["en-US", "en"] as readonly string[],
+    });
+    (window as Record<string, unknown>).chrome = {
+      runtime: {
+        onMessage: { addListener: () => {}, removeListener: () => {} },
+        onConnect: { addListener: () => {}, removeListener: () => {} },
+      },
     };
   });
 }

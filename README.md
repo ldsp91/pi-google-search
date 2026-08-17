@@ -19,7 +19,7 @@ Results are returned as a numbered list of titles, URLs, and snippets, with `det
 2. **Fallback: real Chrome browser (Playwright)** — triggered when CSE hits its rate limit (HTTP 429), fails, or is explicitly skipped:
    - `forceBrowser: true` in the tool params, or the `CSE_FORCE_BROWSER` environment variable.
    - Uses the real Google Chrome binary (not Playwright's Chromium) in a **persistent, headed profile** at `$TMPDIR/google_search_profile`, so consent dialogs are handled only once.
-   - Stealth patches applied to hide automation fingerprints: `navigator.webdriver` removal, plugins/languages spoofing, Chrome runtime spoofing, notification-permission override, WebGL vendor/renderer masking.
+   - Stealth patches applied to hide automation fingerprints: `navigator.webdriver` removal, plugins/languages spoofing, Chrome runtime spoofing.
    - Handles Google consent dialogs and detects CAPTCHAs (throws an error if one appears).
 
 ## Install
@@ -91,7 +91,28 @@ RUN apt-get update -y \
     && rm -rf /var/lib/apt/lists/*
 ```
 
-After this, nothing else is needed at runtime — the extension handles the rest (see below).
+Then pre-warm the persistent Chrome profile **at build time** (same base image, append):
+
+```dockerfile
+RUN set -e; \
+    Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp & \
+    sleep 2; \
+    DISPLAY=:99 TZ=Europe/Berlin timeout 30 google-chrome \
+        --no-sandbox --disable-dev-shm-usage --disable-gpu \
+        --no-first-run --no-default-browser-check \
+        --user-data-dir=/tmp/google_search_profile \
+        --dump-dom "https://www.google.com/" >/dev/null 2>&1 || true; \
+    DISPLAY=:99 TZ=Europe/Berlin timeout 30 google-chrome \
+        --no-sandbox --disable-dev-shm-usage --disable-gpu \
+        --no-first-run --no-default-browser-check \
+        --user-data-dir=/tmp/google_search_profile \
+        --dump-dom "https://www.google.com/search?q=test&hl=en" >/dev/null 2>&1 || true; \
+    pkill Xvfb || true; sleep 1
+```
+
+Why: Google CAPTCHA-walls a brand-new, cookie-less profile appearing on an IP it already knows. The build machine shares the sandbox's egress IP, so the cookies this profile receives at build time (`NID`, `AEC`, …) are minted on the very IP the sandbox will present them from — the runtime client then looks like a returning user. Build the image on the machine whose line the sandbox uses, and rebuild now and then to refresh the cookies.
+
+After both blocks, nothing else is needed at runtime — the extension handles the rest (see below).
 
 #### Option B: install into a running sandbox
 
@@ -106,9 +127,10 @@ This does the same installs at runtime (Debian/Ubuntu bases).
 
 1. detects that `DISPLAY` is unset,
 2. starts `Xvfb :99` (falls back to :100–:110 if busy) with a 1920×1080 screen,
-3. on Linux, matches the browser's timezone to the egress IP's region so the client's clock agrees with its IP's geography,
-4. launches real headed Chrome against it, and
-5. kills Xvfb on session shutdown.
+3. on Linux, pins the browser's timezone to the egress region (`CSE_TIMEZONE`, default `Europe/Berlin`) so the client's clock agrees with its IP's geography,
+4. clears any orphaned Chrome / stale `SingletonLock` left behind by a killed session (launching on a locked profile would hang),
+5. launches real headed Chrome against the persistent profile `/tmp/google_search_profile` (on Linux), and
+6. kills Xvfb on session shutdown.
 
 Notes:
 
@@ -125,3 +147,4 @@ Notes:
 | `CSE_CHROME_PATH` | Override the Chrome executable location (checked first during discovery) |
 | `CSE_FORCE_BROWSER` | When set, always skip the CSE API and use the browser fallback |
 | `DISPLAY` | Use this X display instead of auto-starting Xvfb (Linux) |
+| `CSE_TIMEZONE` | Timezone the browser reports on Linux (default `Europe/Berlin`; should match the egress IP's region) |
