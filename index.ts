@@ -7,12 +7,16 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execSync, spawn, type ChildProcess } from 'node:child_process';
+import { ChildProcess, execSync, spawn, type } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium, type BrowserContext, type LaunchOptions } from 'playwright';
+import { BrowserContext, chromium, LaunchOptions, type } from 'playwright';
 import { Type } from 'typebox';
+
+const IS_WIN = process.platform === "win32";
+const IS_MAC = process.platform === "darwin";
+const IS_LINUX = process.platform === "linux";
 
 const CX = "partner-pub-8993703457585266:4862972284";
 const TOKEN_TTL = 3_600_000; // 1 hour in ms
@@ -22,10 +26,6 @@ const TOKEN_CACHE_PATH = join(tmpdir(), "google_cse_token.json");
 const BROWSER_PROFILE_DIR = IS_LINUX
   ? "/tmp/google_search_profile"
   : join(tmpdir(), "google_search_profile");
-
-const IS_WIN = process.platform === "win32";
-const IS_MAC = process.platform === "darwin";
-const IS_LINUX = process.platform === "linux";
 
 /**
  * Locate the real Chrome binary.
@@ -112,7 +112,10 @@ async function waitFor(
  * headful Chrome can render inside display-less environments (containers,
  * sandboxes). Returns null when Xvfb is not installed.
  */
-async function startXvfb(): Promise<{ display: string; proc: ChildProcess } | null> {
+async function startXvfb(): Promise<{
+  display: string;
+  proc: ChildProcess;
+} | null> {
   try {
     execSync("which Xvfb", { stdio: "ignore" });
   } catch {
@@ -140,7 +143,9 @@ async function startXvfb(): Promise<{ display: string; proc: ChildProcess } | nu
       }),
     ]);
     if (!up) {
-      try { proc.kill(); } catch {}
+      try {
+        proc.kill();
+      } catch {}
       continue;
     }
     return { display, proc };
@@ -233,7 +238,9 @@ async function getContext(): Promise<BrowserContext> {
       // Reset so the next call can retry (e.g. after fixing the environment)
       contextInstance = null;
       if (xvfbProc) {
-        try { xvfbProc.kill(); } catch {}
+        try {
+          xvfbProc.kill();
+        } catch {}
         xvfbProc = null;
       }
       throw err;
