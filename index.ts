@@ -234,6 +234,27 @@ async function getContext(): Promise<BrowserContext> {
 
   contextInstance = chromium
     .launchPersistentContext(BROWSER_PROFILE_DIR, launchOptions)
+    .then(async (context) => {
+      // Drop heavy subresources everywhere: images, CSS, fonts and media
+      // are weight we never read (headlines and snippets are
+      // server-rendered HTML). CSS is also parser-blocking, so removing
+      // it makes DCL arrive sooner. Consent and all JS flows keep working.
+      await context.route("**/*", (route) => {
+        const t = route.request().resourceType();
+        return (
+          t === "image" ||
+          t === "font" ||
+          t === "media" ||
+          t === "stylesheet" ||
+          t === "manifest" ||
+          t === "websocket" ||
+          t === "texttrack"
+        )
+          ? route.abort()
+          : route.continue();
+      });
+      return context;
+    })
     .catch((err) => {
       // Reset so the next call can retry (e.g. after fixing the environment)
       contextInstance = null;
@@ -385,6 +406,27 @@ async function searchWithBrowser(query: string): Promise<any[]> {
   const page = await context.newPage();
   await applyStealth(page);
 
+  // Search pages: block scripts too. The results we read (titles, links,
+  // snippets) are server-rendered HTML, so scripts only add weight. If a
+  // consent interstitial shows up (it needs JS to click through), the
+  // no-results branch below unroutes and reloads with full resources.
+  const searchRoute = (route: import("playwright").Route) => {
+    const t = route.request().resourceType();
+    return (
+      t === "image" ||
+      t === "font" ||
+      t === "media" ||
+      t === "stylesheet" ||
+      t === "manifest" ||
+      t === "websocket" ||
+      t === "texttrack" ||
+      t === "script"
+    )
+      ? route.abort()
+      : route.continue();
+  };
+  await page.route("**/*", searchRoute);
+
   // macOS only: bring the terminal forward to cover the Chrome window.
   // On Windows the window is launched off-screen instead (see getContext).
   const hideChrome = () => {
@@ -418,20 +460,29 @@ async function searchWithBrowser(query: string): Promise<any[]> {
     if (!hasResults) {
       hideChrome();
 
-      // No results yet: a consent interstitial is up or the page is still
-      // rendering. Handle consent, then wait for results again.
+      // No results yet: either a consent interstitial is up or the page
+      // is still rendering.
       const consentSelectors = [
         'fluent-button[aria-label*="Accept"]',
         "button#L2AGLb",
         'div[role="dialog"] button',
         "center > div > button",
       ];
-      for (const selector of consentSelectors) {
-        const btn = page.locator(selector).first();
-        if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
-          await btn.click().catch(() => {});
-          await page.waitForTimeout(1500);
-          break;
+      const consent = page.locator(consentSelectors.join(", ")).first();
+      if (await consent.isVisible({ timeout: 1500 }).catch(() => false)) {
+        // Consent interstitial: clicking through needs JavaScript, which
+        // we blocked for speed — unblock and reload the full page.
+        await page.unroute("**/*", searchRoute);
+        await page
+          .reload({ waitUntil: "domcontentloaded", timeout: 30_000 })
+          .catch(() => {});
+        for (const selector of consentSelectors) {
+          const btn = page.locator(selector).first();
+          if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+            await btn.click().catch(() => {});
+            await page.waitForTimeout(1500);
+            break;
+          }
         }
       }
       await page
@@ -539,11 +590,22 @@ async function searchWithBrowser(query: string): Promise<any[]> {
 
 export default function (pi: ExtensionAPI) {
   // In display-less Linux environments (the sandbox) there is no visible
-  // window to be intrusive about, so start the browser eagerly: by the
-  // time the first search runs, Chrome is already up and the call pays
-  // no launch cost. On Mac/Windows the window would pop up, so stay lazy.
+  // window to be intrusive about, so start the browser eagerly and
+  // pre-warm the connection: by the time the first search runs, Chrome is
+  // up and the shared Google resources (DNS, TLS, base scripts) are
+  // cached. On Mac/Windows the window would pop up, so stay lazy.
   if (IS_LINUX && !process.env.DISPLAY) {
-    void getContext().catch(() => {});
+    void (async () => {
+      try {
+        const ctx = await getContext();
+        const warm = await ctx.newPage();
+        await warm.goto("https://www.google.com/", {
+          waitUntil: "domcontentloaded",
+          timeout: 30_000,
+        });
+        await warm.close();
+      } catch {}
+    })();
   }
 
   pi.on("session_shutdown", async () => {
