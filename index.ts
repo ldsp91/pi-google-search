@@ -426,14 +426,16 @@ async function searchWithBrowser(query: string): Promise<any[]> {
       }
     }
 
-    // Check for CAPTCHA
-    const captchaVisible = await page
-      .locator('#captcha-container, .g-recaptcha, div[role="dialog"]')
-      .first()
-      .isVisible({ timeout: 1000 })
-      .catch(() => false);
+    // Check for CAPTCHA — the exact detection the validated reference flow
+    // uses (real CAPTCHA markers only). Broader selectors such as
+    // div[role="dialog"] false-positive on benign dialogs that appear on
+    // an otherwise normal results page.
+    const captchaCount = await page
+      .locator("#captcha-form, .g-recaptcha, #recaptcha")
+      .count()
+      .catch(() => 0);
 
-    if (captchaVisible) {
+    if (captchaCount > 0) {
       throw new Error("Google showed a CAPTCHA");
     }
 
@@ -571,13 +573,18 @@ export default function (pi: ExtensionAPI) {
           results = await searchWithBrowser(params.query);
           source = "browser-fallback";
         } catch (browserErr) {
+          // Surface the real error: when CSE was skipped (forceBrowser),
+          // the browser error IS the error; otherwise show both.
+          const cseMsg =
+            cseErr instanceof Error ? cseErr.message : String(cseErr);
+          const browserMsg =
+            browserErr instanceof Error ? browserErr.message : String(browserErr);
+          const text =
+            cseMsg === "CSE skipped (forceBrowser)"
+              ? `Search failed: ${browserMsg}`
+              : `Search failed: CSE: ${cseMsg}; browser: ${browserMsg}`;
           return {
-            content: [
-              {
-                type: "text",
-                text: `Search failed: ${cseErr instanceof Error ? cseErr.message : String(cseErr)}`,
-              },
-            ],
+            content: [{ type: "text", text }],
             details: {},
           };
         }

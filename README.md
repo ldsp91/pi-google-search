@@ -96,7 +96,7 @@ Then pre-warm the persistent Chrome profile **at build time** (same base image, 
 ```dockerfile
 RUN set -e; \
     Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp & \
-    sleep 2; \
+    sleep 3; \
     DISPLAY=:99 TZ=Europe/Berlin timeout 30 google-chrome \
         --no-sandbox --disable-dev-shm-usage --disable-gpu \
         --no-first-run --no-default-browser-check \
@@ -107,7 +107,12 @@ RUN set -e; \
         --no-first-run --no-default-browser-check \
         --user-data-dir=/tmp/google_search_profile \
         --dump-dom "https://www.google.com/search?q=test&hl=en" >/dev/null 2>&1 || true; \
-    pkill Xvfb || true; sleep 1
+    pkill Xvfb || true; sleep 1; \
+    if [ -f /tmp/google_search_profile/Default/Cookies ]; then \
+        echo "WARM-PROFILE OK: cookies minted at build time"; \
+    else \
+        echo "WARM-PROFILE WARNING: no cookies minted — runtime may hit CAPTCHA (rebuild)"; \
+    fi
 ```
 
 Why: Google CAPTCHA-walls a brand-new, cookie-less profile appearing on an IP it already knows. The build machine shares the sandbox's egress IP, so the cookies this profile receives at build time (`NID`, `AEC`, …) are minted on the very IP the sandbox will present them from — the runtime client then looks like a returning user. Build the image on the machine whose line the sandbox uses, and rebuild now and then to refresh the cookies.
