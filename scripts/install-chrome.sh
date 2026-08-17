@@ -6,6 +6,8 @@
 # Installs:
 #   - Google Chrome (headful build, not headless-shell)
 #   - Xvfb (virtual display; the extension starts it automatically when DISPLAY is unset)
+#   - A realistic font set (fontconfig + DejaVu/Liberation/Roboto; a bare
+#     container's 16 fonts is itself a bot signal for fingerprint checks)
 #
 # Requires: Debian/Ubuntu base image, root access.
 #
@@ -17,7 +19,9 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 apt-get update -y
-apt-get install -y --no-install-recommends wget ca-certificates xvfb
+apt-get install -y --no-install-recommends wget ca-certificates xvfb \
+  fontconfig fonts-dejavu-core fonts-liberation fonts-roboto
+fc-cache -f >/dev/null 2>&1 || true
 
 # --- Google Chrome ---
 if ! command -v google-chrome >/dev/null 2>&1 && [ ! -x /opt/google/chrome/chrome ]; then
@@ -31,6 +35,7 @@ fi
 echo "--- installed ---"
 google-chrome --no-sandbox --version
 command -v Xvfb
+echo "fonts: $(fc-list 2>/dev/null | wc -l)"
 
 echo ""
 echo "Done. The web_search extension will now:"

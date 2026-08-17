@@ -174,9 +174,27 @@ async function getContext(): Promise<BrowserContext> {
     }
   }
 
+  // A real user's browser always reports the timezone of the region their
+  // egress IP points to. Display-less Linux environments default to UTC,
+  // which disagrees with the IP's geography and reads as bot-like, so on
+  // Linux we align the browser's timezone with the egress IP's (best
+  // effort; on any failure the system default is kept).
+  let timezoneId: string | undefined;
+  if (IS_LINUX) {
+    try {
+      const resp = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
+        signal: AbortSignal.timeout(3000),
+      });
+      const text = await resp.text();
+      const m = text.match(/^TZ=([^\r\n]+)$/m);
+      timezoneId = m?.[1];
+    } catch {}
+  }
+
   const launchOptions: LaunchOptions = {
     executablePath: executable,
     headless: false,
+    ...(timezoneId ? { timezoneId } : {}),
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -187,8 +205,12 @@ async function getContext(): Promise<BrowserContext> {
       ...(IS_WIN ? ["--window-position=-32000,-32000"] : []),
     ],
   };
-  if (display) {
-    launchOptions.env = { ...process.env, DISPLAY: display };
+  if (display || timezoneId) {
+    launchOptions.env = {
+      ...process.env,
+      ...(display ? { DISPLAY: display } : {}),
+      ...(timezoneId ? { TZ: timezoneId } : {}),
+    };
   }
 
   contextInstance = chromium

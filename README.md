@@ -70,26 +70,53 @@ That's it — the browser fallback uses your system's Google Chrome, so `npx pla
 
 ### Sandbox / headless Linux setup
 
-The browser fallback is **headed** by design (headless Chrome gets caught by Google). Inside a sandbox with no display, Chrome renders to a virtual X server instead:
+The browser fallback is **headed** by design (headless Chrome gets caught by Google). Inside a sandbox with no display, Chrome renders to a virtual X server instead.
+
+#### Option A: bake it into the image (recommended)
+
+Add this to your sandbox Dockerfile (Debian/Ubuntu base; works for both amd64 and arm64):
+
+```dockerfile
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+        wget ca-certificates \
+        xvfb \
+        fontconfig fonts-dejavu-core fonts-liberation fonts-roboto \
+    && wget -qO /tmp/google-chrome.deb \
+        "https://dl.google.com/linux/direct/google-chrome-stable_current_$(dpkg --print-architecture).deb" \
+    && apt-get install -y /tmp/google-chrome.deb \
+    && rm -f /tmp/google-chrome.deb \
+    && fc-cache -f \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+After this, nothing else is needed at runtime — the extension handles the rest (see below).
+
+#### Option B: install into a running sandbox
 
 ```bash
 # one-time, as root inside the sandbox:
 bash scripts/install-chrome.sh
 ```
 
-This installs Google Chrome + Xvfb (Debian/Ubuntu bases). At runtime the extension:
+This does the same installs at runtime (Debian/Ubuntu bases).
+
+#### What the extension does at runtime
 
 1. detects that `DISPLAY` is unset,
 2. starts `Xvfb :99` (falls back to :100–:110 if busy) with a 1920×1080 screen,
-3. launches real headed Chrome against it, and
-4. kills Xvfb on session shutdown.
+3. on Linux, matches the browser's timezone to the egress IP's region so the client's clock agrees with its IP's geography,
+4. launches real headed Chrome against it, and
+5. kills Xvfb on session shutdown.
 
 Notes:
 
 - Works in Docker/VM sandboxes because Chrome runs with `--no-sandbox --disable-dev-shm-usage`.
 - If you already run an X server (e.g. `xvfb-run` or a forwarded display), set `DISPLAY` and Xvfb is skipped.
 - Chromium-only systems are supported via auto-discovery of `/usr/bin/chromium*`.
-- The sandbox's own IP reputation still applies — Google may rate-limit datacenter IPs regardless of headed/headless.
+- The font set matters: a realistic set (DejaVu/Liberation/Roboto) keeps the client's rendering fingerprint plausible — a bare container's ~16 fonts is a bot signal.
+- The sandbox's egress IP reputation still applies — Google may rate-limit datacenter IPs regardless of headed/headless.
 
 ## Configuration
 
